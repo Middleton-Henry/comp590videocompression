@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 
 use bitbit::{BitReader, MSB};
-use toy_ac::decoder::Decoder;
+use toy_ac::arithmetic_decoder::Decoder;
 
 use toy_ac::symbol_model::SymbolModel;
 use toy_ac::symbol_model::VectorCountSymbolModel;

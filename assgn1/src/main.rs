@@ -12,13 +12,49 @@ use bitbit::BitReader;
 use bitbit::BitWriter;
 use bitbit::MSB;
 
-use toy_ac::decoder::Decoder;
-use toy_ac::encoder::Encoder;
+use toy_ac::arithmetic_decoder::Decoder as ArithmeticDecoder;
+use toy_ac::huffman_decoder::Decoder as HuffmanDecoder;
+use toy_ac::arithmetic_encoder::Encoder as ArithmeticEncoder;
+use toy_ac::huffman_encoder::Encoder as HuffmanEncoder;
+
+// Two connected coding states
+enum CodingType {
+    ARITHMETIC(ArithmeticEncoder),
+    HUFFMAN(HuffmanEncoder)
+}
+
+enum DecodingType {
+    ARITHMETIC(ArithmeticDecoder),
+    HUFFMAN(HuffmanDecoder)
+}
+
 use toy_ac::symbol_model::VectorCountSymbolModel;
 
 use ffmpeg_sidecar::event::StreamTypeSpecificData::Video;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //prompt for encoding type
+    println!("Select an encoding type:");
+    println!("1. Arithmetic coding");
+    println!("2. Huffman coding");
+
+    let encoding_type : i32 = loop {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        //set value of encoding type based on user input or prompt again if invalid input
+        match input.trim() {
+            "1" => break 1,
+            "2" => break 2,
+            _ => println!("Invalid input, please enter 1 or 2.")
+        }
+    };
+
+    let mut enc = match encoding_type {
+        1 => CodingType::ARITHMETIC(ArithmeticEncoder::new()),
+        2 => CodingType::HUFFMAN(HuffmanEncoder::new()),
+        _ => panic!("Invalid encoding type")
+    };
+
     // Make sure ffmpeg is installed
     ffmpeg_sidecar::download::auto_download().unwrap();
 
@@ -103,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf_writer = BufWriter::new(output_file);
     let mut bw = BitWriter::new(&mut buf_writer);
 
-    let mut enc = Encoder::new();
+    //let mut enc = Encoder::new();
 
     // Set up arithmetic coding context(s)
     let mut pixel_difference_pdf = VectorCountSymbolModel::new((0..=255).collect());
@@ -117,30 +153,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if frame.frame_num < skip_count + count {
             let current_frame: Vec<u8> = frame.data; // <- raw pixel y values
 
-            let bits_written_at_start = enc.bits_written();
+            let bits_written_at_start = match &mut enc {
+                CodingType::ARITHMETIC(a) => a.bits_written(),
+                CodingType::HUFFMAN(h) => h.bits_written(),
+            };
+            //let bits_written_at_start = enc.bits_written();
 
-            // Process pixels in row major order.
-            for r in 0..height {
-                for c in 0..width {
-                    let pixel_index = (r * width + c) as usize;
+            match &mut enc {
+                CodingType::ARITHMETIC(a) => {
+                    // Process pixels in row major order.
+                    for r in 0..height {
+                        for c in 0..width {
+                            let pixel_index = (r * width + c) as usize;
 
-                    // Encode difference with same pixel in prior frame.
-                    // Normalize and modulate difference to 8-bit range.
-                    let pixel_difference = (((current_frame[pixel_index] as i32)
-                        - (prior_frame[pixel_index] as i32))
-                        + 256)
-                        % 256;
+                            // Encode difference with same pixel in prior frame.
+                            // Normalize and modulate difference to 8-bit range.
+                            let pixel_difference = (((current_frame[pixel_index] as i32)
+                                - (prior_frame[pixel_index] as i32))
+                                + 256)
+                                % 256;
+                            
 
-                    enc.encode(&pixel_difference, &pixel_difference_pdf, &mut bw);
+                            a.encode(&pixel_difference, &pixel_difference_pdf, &mut bw);
 
-                    // Update context
-                    pixel_difference_pdf.incr_count(&pixel_difference);
+                            // Update context
+                            pixel_difference_pdf.incr_count(&pixel_difference);
+                        }
+                    }
+                }
+                CodingType::HUFFMAN(h) => {
+                    let mut diff_frame = vec![0u8; (width * height) as usize];
+                    for i in 0..diff_frame.len() {
+                        diff_frame[i] = (((current_frame[i] as i32 - prior_frame[i] as i32) + 256) % 256) as u8;
+                    }
+                    h.encode(&diff_frame, &mut bw);
                 }
             }
+            
 
             prior_frame = current_frame;
-
-            let bits_written_at_end = enc.bits_written();
+            
+            let bits_written_at_end = match &mut enc {
+                CodingType::ARITHMETIC(a) => a.bits_written(),
+                CodingType::HUFFMAN(h) => h.bits_written(),
+            };
+            //let bits_written_at_end = enc.bits_written();
 
             if verbose {
                 println!(
@@ -155,77 +212,163 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Tie off arithmetic encoder and flush to file.
-    enc.finish(&mut bw)?;
+    //enc.finish(&mut bw)?;
+    match &mut enc {
+        CodingType::ARITHMETIC(a) => a.finish(&mut bw)?,
+        CodingType::HUFFMAN(h) => h.finish(&mut bw)?,
+    }
     bw.pad_to_byte()?;
     buf_writer.flush()?;
 
     // Decompress and check for correctness.
     if check_decode {
-        let output_file = match File::open(&output_file_path) {
-            Err(_) => panic!("Error opening output file"),
-            Ok(f) => f,
-        };
-        let mut buf_reader = BufReader::new(output_file);
-        let mut br: BitReader<_, MSB> = BitReader::new(&mut buf_reader);
+        match encoding_type {
+            1 => {
+                let output_file = match File::open(&output_file_path) {
+                    Err(_) => panic!("Error opening output file"),
+                    Ok(f) => f,
+                };
+                let mut buf_reader = BufReader::new(output_file);
+                let mut br: BitReader<_, MSB> = BitReader::new(&mut buf_reader);
 
-        let iter = FfmpegCommand::new() // <- Builder API like `std::process::Command`
-            .input(input_file_path.to_str().unwrap())
-            .format("rawvideo")
-            .pix_fmt("gray8")
-            .output("-")
-            .spawn()? // <- Ordinary `std::process::Child`
-            .iter()?; // <- Blocking iterator over logs and output
+                let iter = FfmpegCommand::new() // <- Builder API like `std::process::Command`
+                    .input(input_file_path.to_str().unwrap())
+                    .format("rawvideo")
+                    .pix_fmt("gray8")
+                    .output("-")
+                    .spawn()? // <- Ordinary `std::process::Child`
+                    .iter()?; // <- Blocking iterator over logs and output
 
-        let mut dec = Decoder::new();
+                let mut dec = DecodingType::ARITHMETIC(ArithmeticDecoder::new());
 
-        let mut pixel_difference_pdf = VectorCountSymbolModel::new((0..=255).collect());
+                // kinda redundant due to presence in in iff statement, but easier to paste
+                let decoded_pixel_difference = match &mut dec {
+                    DecodingType::ARITHMETIC(a) => a.decode(&pixel_difference_pdf, &mut br).to_owned(),//needs to be cloned for whatever reason
+                    DecodingType::HUFFMAN(h) => h.decode(&mut br) as i32 //might be using unnecessary bits by casting to i32
+                };
 
-        // Set up initial prior frame as uniform medium gray
-        let mut prior_frame = vec![128 as u8; (width * height) as usize];
+                // Set up initial prior frame as uniform medium gray
+                let mut prior_frame = vec![128 as u8; (width * height) as usize];
 
-        'outer_loop: 
-        for frame in iter.filter_frames() {
-            if frame.frame_num < skip_count + count {
-                if verbose {
-                    print!("Checking frame: {} ... ", frame.frame_num);
-                }
-
-                let current_frame: Vec<u8> = frame.data; // <- raw pixel y values
-
-                // Process pixels in row major order.
-                for r in 0..height {
-                    for c in 0..width {
-                        let pixel_index = (r * width + c) as usize;
-                        let decoded_pixel_difference = dec.decode(&pixel_difference_pdf, &mut br).to_owned();
-                        pixel_difference_pdf.incr_count(&decoded_pixel_difference);
-
-                        let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
-
-                        if pixel_value != current_frame[pixel_index] as i32 {
-                            println!(
-                                " error at ({}, {}), should decode {}, got {}",
-                                c, r, current_frame[pixel_index], pixel_value
-                            );
-                            println!("Abandoning check of remaining frames");
-                            break 'outer_loop;
+                'outer_loop: 
+                for frame in iter.filter_frames() {
+                    if frame.frame_num < skip_count + count {
+                        if verbose {
+                            print!("Checking frame: {} ... ", frame.frame_num);
                         }
+
+                        let current_frame: Vec<u8> = frame.data; // <- raw pixel y values
+
+                        // Process pixels in row major order.
+                        for r in 0..height {
+                            for c in 0..width {
+                                let pixel_index = (r * width + c) as usize;
+                                let decoded_pixel_difference = match &mut dec {
+                                    DecodingType::ARITHMETIC(a) => a.decode(&pixel_difference_pdf, &mut br).to_owned(),//needs to be cloned for whatever reason
+                                    DecodingType::HUFFMAN(h) => h.decode(&mut br) as i32
+                                };
+                                pixel_difference_pdf.incr_count(&decoded_pixel_difference);
+
+                                let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
+
+                                if pixel_value != current_frame[pixel_index] as i32 {
+                                    println!(
+                                        " error at ({}, {}), should decode {}, got {}",
+                                        c, r, current_frame[pixel_index], pixel_value
+                                    );
+                                    println!("Abandoning check of remaining frames");
+                                    break 'outer_loop;
+                                }
+                            }
+                        }
+                        println!("correct.");
+                        prior_frame = current_frame;
+                    } else {
+                        break 'outer_loop;
                     }
                 }
-                println!("correct.");
-                prior_frame = current_frame;
-            } else {
-                break 'outer_loop;
+            }
+            2 => {
+                let output_file = match File::open(&output_file_path) {
+                    Err(_) => panic!("Error opening output file"),
+                    Ok(f) => f,
+                };
+                let mut buf_reader = BufReader::new(output_file);
+                let mut br: BitReader<_, MSB> = BitReader::new(&mut buf_reader);
+
+                let iter = FfmpegCommand::new() // <- Builder API like `std::process::Command`
+                    .input(input_file_path.to_str().unwrap())
+                    .format("rawvideo")
+                    .pix_fmt("gray8")
+                    .output("-")
+                    .spawn()? // <- Ordinary `std::process::Child`
+                    .iter()?; // <- Blocking iterator over logs and output
+
+                // Initialize adaptive Huffman decoder
+                let mut dec = DecodingType::HUFFMAN(HuffmanDecoder::new());
+
+                // Initial uniform gray frame
+                let mut prior_frame = vec![128u8; (width * height) as usize];
+
+                'outer_loop: 
+                for frame in iter.filter_frames() {
+                    if frame.frame_num >= skip_count + count {
+                        break 'outer_loop;
+                    }
+
+                    if verbose {
+                        print!("Checking frame: {} ... ", frame.frame_num);
+                    }
+
+                    let current_frame: Vec<u8> = frame.data;
+
+                    for r in 0..height {
+                        for c in 0..width {
+                            let pixel_index = (r * width + c) as usize;
+
+                            let decoded_pixel_difference = match &mut dec {
+                                DecodingType::ARITHMETIC(a) => a.decode(&pixel_difference_pdf, &mut br).to_owned(),//needs to be cloned for whatever reason
+                                DecodingType::HUFFMAN(h) => h.decode(&mut br) as i32 //might be using unnecessary bits by casting to i32
+                            };
+
+                            // Reconstruct actual pixel
+                            let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference as i32) % 256;
+
+                            if pixel_value != current_frame[pixel_index] as i32 {
+                                println!(
+                                    " error at ({}, {}), should decode {}, got {}",
+                                    c, r, current_frame[pixel_index], pixel_value
+                                );
+                                println!("Abandoning check of remaining frames");
+                                break 'outer_loop;
+                            }
+                        }
+                    }
+
+                    if verbose {
+                        println!("correct.");
+                    }
+
+                    prior_frame = current_frame;
+                }
+            }
+            _ => {
+                panic!("Invalid encoding type");
             }
         }
     }
 
     // Emit report
     if report {
+        let total_bits = match &mut enc {
+            CodingType::ARITHMETIC(a) => a.bits_written(),
+            CodingType::HUFFMAN(h) => h.bits_written(),
+        };
         println!(
             "{} frames encoded, average size (bits): {}, compression ratio: {:.2}",
             count,
-            enc.bits_written() / count as u64,
-            (width * height * 8 * count) as f64 / enc.bits_written() as f64
+            total_bits / count as u64,
+            (width * height * 8 * count) as f64 / total_bits as f64
         )
     }
 
