@@ -37,12 +37,12 @@ impl Eq for Node {}
 /// Build Huffman tree from frequencies
 fn build_tree(freqs: &[u64; 256]) -> Node {
     let mut heap = BinaryHeap::new();
-    let mut counter = 0u64;  // ADD
+    let mut counter = 0u64;  
 
     for (sym, &freq) in freqs.iter().enumerate() {
         if freq > 0 {
             heap.push(Node { symbol: Some(sym as u8), freq, seq: counter, left: None, right: None });
-            counter += 1;  // ADD
+            counter += 1; 
         }
     }
     while heap.len() > 1 {
@@ -51,11 +51,11 @@ fn build_tree(freqs: &[u64; 256]) -> Node {
         heap.push(Node {
             symbol: None,
             freq: a.freq + b.freq,
-            seq: counter,  // ADD
+            seq: counter, 
             left: Some(Box::new(a)),
             right: Some(Box::new(b)),
         });
-        counter += 1;  // ADD
+        counter += 1;
     }
     heap.pop().expect("Frequency table was empty")
 }

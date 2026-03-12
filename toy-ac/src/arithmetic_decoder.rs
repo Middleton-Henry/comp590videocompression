@@ -96,7 +96,7 @@ impl Decoder {
             let msb = self.buffer & 0x80000000;
             let next_bit = match input.read_bit() {
                 Ok(bit) => if bit { 1 } else { 0 },
-                Err(_) => 0, // Or handle EOF gracefully
+                Err(_) => 0,
             };
             self.buffer = msb | ((self.buffer << 1) & 0x7FFFFFFF) | next_bit;
         }
