@@ -9,3 +9,4 @@ ffmpeg-sidecar = "2.4"
 workspace_root = "0.2.0"
 bitbit = "0.2.0"
 toy_ac = {path = "../toy-ac"}
+rustdct = "0.7.1"

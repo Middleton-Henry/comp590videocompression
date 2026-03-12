@@ -62,7 +62,7 @@ impl Range {
     pub fn in_middle(&self) -> bool {
         self.high < self.three_quarter_mark() && self.low > self.quarter_mark()
     }
-
+    /*
     pub fn shift_sob(&mut self) {
         if !self.in_middle() {
             panic!("Second order bit should only be shifted if range is in middle")
@@ -70,6 +70,14 @@ impl Range {
 
         self.high = ((self.high << 1) & self.range_mask()) | 0x1 | self.hob_mask();
         self.low = ((self.low << 1) & self.range_mask()) & (!self.hob_mask());
+    }
+    */
+    pub fn shift_sob(&mut self) {
+        let msb = self.high & 0x80000000;
+        self.low = (self.low << 1) & 0x7FFFFFFF;
+        self.high = ((self.high << 1) & 0x7FFFFFFF) | 1;
+        self.low |= msb;
+        self.high |= msb;
     }
 }
 

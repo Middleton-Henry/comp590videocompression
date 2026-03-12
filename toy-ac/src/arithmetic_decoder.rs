@@ -51,6 +51,7 @@ impl Decoder {
         let new_high = low + (range_width * int_end as u64) / total  - 1;
 
         self.range.reduce(new_high, new_low);
+        /*
         while self.range.hob_match() {
             let is_one = self.range.shift_hob();
             assert!(is_one == (self.buffer & 0x80000000 != 0));
@@ -60,9 +61,19 @@ impl Decoder {
                 Err(_) => panic!("Error reading bit"),
             }
         }
+        */
+        while self.range.hob_match() {
+        self.range.shift_hob();
+        let next_bit = match input.read_bit() {
+            Ok(bit) => if bit { 1 } else { 0 },
+            Err(_) => 0,
+        };
+        self.buffer = (self.buffer << 1) | next_bit;
+    }
 
         assert!(!self.range.hob_match());
-
+        
+        /*
         while self.range.in_middle() {
             self.range.shift_sob();
             let buffer_hob_is_one = (self.buffer & 0x80000000) != 0;
@@ -77,6 +88,17 @@ impl Decoder {
                 }
                 Err(_) => panic!("Erorr reading bit"),
             }
+        }
+        */
+
+        while self.range.in_middle() {
+            self.range.shift_sob();
+            let msb = self.buffer & 0x80000000;
+            let next_bit = match input.read_bit() {
+                Ok(bit) => if bit { 1 } else { 0 },
+                Err(_) => 0, // Or handle EOF gracefully
+            };
+            self.buffer = msb | ((self.buffer << 1) & 0x7FFFFFFF) | next_bit;
         }
         return result;
     }

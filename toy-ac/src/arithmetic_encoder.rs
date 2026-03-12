@@ -39,6 +39,27 @@ impl Encoder {
         let new_high = low + (range_width * int_end as u64) / total - 1;
 
         self.range.reduce(new_high, new_low);
+
+        loop {
+            if self.range.hob_match() {
+                let bit = self.range.shift_hob();
+                output.write_bit(bit).unwrap();
+                self.bits_written += 1;
+
+                for _ in 0..self.pending {
+                    output.write_bit(!bit).unwrap();
+                    self.bits_written += 1;
+                }
+                self.pending = 0;
+            } else if self.range.in_middle() {
+                self.range.shift_sob(); // Shift out the second bit
+                self.pending += 1;
+            } else {
+                break;
+            }
+        }
+
+        /* 
         if self.range.hob_match() {
             let is_one = self.range.shift_hob();
 
@@ -60,8 +81,9 @@ impl Encoder {
         while self.range.in_middle() {
             self.range.shift_sob();
             self.pending += 1;
-            self.bits_written += 1;
+            self.bits_written += 1; //why is this counted if not written?
         }
+        */
     }
 
     pub fn high(&self) -> u64 {
