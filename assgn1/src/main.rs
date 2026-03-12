@@ -33,28 +33,6 @@ use toy_ac::symbol_model::VectorCountSymbolModel;
 use ffmpeg_sidecar::event::StreamTypeSpecificData::Video;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //prompt for encoding type
-    println!("Select an encoding type:");
-    println!("1. Arithmetic coding");
-    println!("2. Huffman coding");
-
-    let encoding_type : i32 = loop {
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        //set value of encoding type based on user input or prompt again if invalid input
-        match input.trim() {
-            "1" => break 1,
-            "2" => break 2,
-            _ => println!("Invalid input, please enter 1 or 2.")
-        }
-    };
-
-    let mut enc = match encoding_type {
-        1 => CodingType::ARITHMETIC(ArithmeticEncoder::new()),
-        2 => CodingType::HUFFMAN(HuffmanEncoder::new()),
-        _ => panic!("Invalid encoding type")
-    };
-
     // Make sure ffmpeg is installed
     ffmpeg_sidecar::download::auto_download().unwrap();
 
@@ -77,8 +55,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut data_folder_path = get_workspace_root();
     data_folder_path.push("data");
 
-    let mut input_file_path = data_folder_path.join("bourne.mp4");
+    //selects the input video file
+    //let mut input_file_path = data_folder_path.join("bourne.mp4");
+    let mut input_file_path = select_input_file(&data_folder_path);
+
     let mut output_file_path = data_folder_path.join("out.dat");
+
+
+
+    //prompt for encoding type
+    println!("Select an encoding type:");
+    println!("1. Arithmetic coding");
+    println!("2. Huffman coding");
+
+    let encoding_type : i32 = loop {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        //set value of encoding type based on user input or prompt again if invalid input
+        match input.trim() {
+            "1" => break 1,
+            "2" => break 2,
+            _ => println!("Invalid input, please enter 1 or 2.")
+        }
+    };
+
+    let mut enc = match encoding_type {
+        1 => CodingType::ARITHMETIC(ArithmeticEncoder::new()),
+        2 => CodingType::HUFFMAN(HuffmanEncoder::new()),
+        _ => panic!("Invalid encoding type")
+    };
+
+    
 
     parse_args(
         &mut verbose,
@@ -374,6 +381,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+use std::fs;
+use std::io::{self};
+
+
+fn select_input_file(data_folder_path: &PathBuf) -> PathBuf {
+    let mut entries: Vec<_> = fs::read_dir(data_folder_path)
+        .expect("Failed to read data folder")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .collect();
+
+    // Sort alphabetically for syncing purposes
+    entries.sort_by_key(|e| e.file_name());
+
+    //list all files with corresponding index
+    println!("Select a file ({:?}):", data_folder_path);
+    for (i, entry) in entries.iter().enumerate() {
+        println!("{}. {}", i + 1, entry.file_name().to_string_lossy());
+    }
+
+    //while loop for selection
+    let selection = loop {
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+
+        match input.trim().parse::<usize>() {
+            Ok(n) if n >= 1 && n <= entries.len() => break n - 1,
+            _ => println!("Invalid input, enter a number between 1 and {}", entries.len()),
+        }
+    };
+
+    entries[selection].path()
+}
+
+use rustdct::DctPlanner;
+use std::f32::consts::SQRT_2;
+
+//Splits frames into 8x8 chunks
+fn apply_dct_block(block: &mut [f32]) {
+    let mut planner = DctPlanner::new();
+    let dct = planner.plan_dct2(8); // 1D DCT
+    // Apply DCT on rows
+    for row in 0..8 {
+        dct.process_dct2(&mut block[row*8..(row+1)*8]);
+    }
+    // Apply DCT on columns
+    let mut col = [0f32; 8];
+    for c in 0..8 {
+        for r in 0..8 { col[r] = block[r*8 + c]; }
+        dct.process_dct2(&mut col);
+        for r in 0..8 { block[r*8 + c] = col[r]; }
+    }
+}
+
+const DEFAULT_QUANTIZATION_TABLE: [[u8; 8]; 8] = [
+    [16, 11, 10, 16, 24, 40, 51, 61],
+    [12, 12, 14, 19, 26, 58, 60, 55],
+    [14, 13, 16, 24, 40, 57, 69, 56],
+    [14, 17, 22, 29, 51, 87, 80, 62],
+    [18, 22, 37, 56, 68, 109, 103, 77],
+    [24, 35, 55, 64, 81, 104, 113, 92],
+    [49, 64, 78, 87, 103, 121, 120, 101],
+    [72, 92, 95, 98, 112, 100, 103, 99],
+];
+
+
+
 
 fn parse_args(
     verbose: &mut bool,
